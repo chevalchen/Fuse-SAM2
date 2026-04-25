@@ -6,8 +6,8 @@ SAM2_WEIGHTS_URL = {
 SAM2_PATHS_CONFIG = {
     'tiny':  ('pretrain/sam2_hiera_tiny.pt', '../sam2/sam2_configs/sam2_hiera_t.yaml'),
     'base':  ('pretrain/sam2_hiera_base_plus.pt', '../sam2/sam2_configs/sam2_hiera_b+.yaml'),
-    # 'large': ('pretrain/sam2_hiera_large.pt', '../sam2/sam2_configs/sam2_hiera_l.yaml')
-    'large': ('pretrain/sam2.1_hiera_large.pt', '../sam2/sam2_configs/sam2.1/sam2.1_hiera_l.yaml')
+    'large': ('pretrain/sam2_hiera_large.pt', '../sam2/sam2_configs/sam2_hiera_l.yaml')
+    # 'large': ('pretrain/sam2.1_hiera_large.pt', '../sam2/sam2_configs/sam2.1/sam2.1_hiera_l.yaml')
 }
 
 

@@ -9,6 +9,7 @@
 - **不微调 SAM2 权重**，只训练适配器
 - 支持 point / box / scribble / mask 四种提示方式
 - 同时支持物体级和零件级分割
+- [Modify] 支持可选不确定性估计分支：在 query 帧的 memory-conditioned 特征上预测逐像素 `log_var`，并可作为辅助损失参与训练
 
 ---
 
@@ -45,10 +46,11 @@ SANSA/
 │       ├── __init__.py
 │       ├── sansa.py         # SANSA 主模型类 + build_sansa 工厂函数
 │       ├── adapter.py       # AdaptFormer 适配器实现
-│       └── model_utils.py   # DDPWrapper、BackboneOutput、DecoderOutput 数据类
+│       ├── model_utils.py   # DDPWrapper、BackboneOutput、DecoderOutput 数据类
+│       └── uncertainty.py   # UncertaintyHead 轻量不确定性估计头
 ├── util/
 │   ├── commons.py           # 检查点加载/保存、日志等公共工具
-│   ├── losses.py            # 损失函数（loss_masks）
+│   ├── losses.py            # 损失函数（loss_masks、uncertainty_loss）
 │   ├── metrics.py           # AverageMeter、Evaluator（IoU 计算）
 │   ├── misc.py              # 分布式初始化等杂项
 │   ├── path_utils.py        # SAM2 权重路径配置
@@ -85,15 +87,20 @@ SANSA/
 输出: {"pred_masks": [B*T, H', W']}
 ```
 
+- [Modify] 当 `use_uncertainty=True` 时，`_compute_decoder_out_w_mem` 会在 Memory Attention 融合之后、SAM mask decoder 解码之前调用 `UncertaintyHead`，仅对 query 帧生成逐像素不确定性图。
+- [Modify] `forward` 内部并行收集 `outputs["masks"]` 与 `outputs["uncertainties"]`；返回前将 query 帧不确定性图插值到原图大小，并以 `result["uncertainty"]` 额外返回，形状为 `[B*T_query, 1, H_orig, W_orig]`。
+
 **关键方法**：
 - `_compute_decoder_out_w_mem`: 使用记忆库做条件解码（query 帧推理）
 - `_compute_memory_bank_dict`: 将当前帧预测编码进记忆字典
 - `_forward_backbone`: 调用 SAM2 编码器 + neck，返回 `BackboneOutput`
+- [Modify] `DecoderOutput` 新增 `uncertainty` 字段，`move_to_cpu()` 也会同步搬运该张量，便于训练/推理阶段统一处理附加输出。
 
 **`build_sansa(sam2_version, adaptformer_stages, channel_factor, device)`**：
 - 自动下载 SAM2 权重（如不存在）
 - 通过 Hydra 配置注入 adapter 参数
 - **冻结所有参数，只解冻名称含 `"adapter"` 的参数**
+- [Modify] `build_sansa(..., use_uncertainty=...)` 透传不确定性开关；冻结策略同步扩展为仅训练名称包含 `"adapter"` 或 `"uncertainty_head"` 的参数。
 
 ---
 
@@ -140,9 +147,11 @@ if hasattr(self, "adapter"):
 | 实验 I/O | `--output_dir`, `--name_exp` |
 | 数据 | `--data_root`, `--dataset_file`, `--multi_train`, `--ds_weight` |
 | 提示/镜头/折叠 | `--prompt`, `--shots`, `--J`, `--fold` |
-| 模型 | `--sam2_version`, `--adaptformer_stages`, `--channel_factor` |
+| 模型 | `--sam2_version`, `--adaptformer_stages`, `--channel_factor`, `--use_uncertainty`, `--uncertainty_loss_weight` |
 | 优化 | `--lr`, `--weight_decay`, `--epochs`, `--batch_size`, `--clip_max_norm` |
 | 推理 | `--threshold`, `--visualize` |
+
+- [Modify] `main.py` 与 `inference_fss.py` 在构建模型时都会把 `args.use_uncertainty` 传入 `build_sansa`，因此训练和评估共用同一套开关。
 
 ---
 
@@ -155,6 +164,9 @@ if hasattr(self, "adapter"):
 4. 前向 `model(imgs, prompt_dict)`
 5. 计算 `loss_masks`（二值交叉熵 + Dice loss）
 6. 反向传播 + 梯度裁剪 + 优化器步进 + LR 调度器步进（每步更新）
+
+- [Modify] 若模型返回 `outputs["uncertainty"]`，训练时会额外调用 `uncertainty_loss`，对 query 帧预测概率与 GT mask 的平方误差执行异方差 NLL 约束，并用 `--uncertainty_loss_weight` 加权后加入总损失。
+- [Modify] `uncertainty_loss` 内部会对 `log_var` 做 `clamp(-6, 6)`，以降低训练初期数值不稳定风险。
 
 ---
 
@@ -242,6 +254,7 @@ python inference_fss.py \
 ### 损失函数（`util/losses.py`）
 - 二值交叉熵（BCE）+ Dice Loss 的加权组合
 - 仅在 query 帧上计算损失（support 帧无标签监督）
+- [Modify] 新增 `uncertainty_loss(pred_masks, gt_masks, log_var, num_frames)`，默认将 mask logits 先过 `sigmoid`，再以 `0.5 * exp(-log_var) * err^2 + 0.5 * log_var` 的形式计算逐像素不确定性 NLL。
 
 ### 分布式训练
 - 支持 DDP（`torch.nn.parallel.DistributedDataParallel`）
@@ -277,3 +290,22 @@ SANSA 将小样本分割重构为"视频分割"：
 4. **新增 prompt 类型**：在 `util/promptable_utils.py` 的 `build_prompt_dict` 和 `get_*_mask` 函数族中扩展，同时在 `opts.py` 的 `--prompt` choices 中添加，并在 `models/sansa/sansa.py` 的 `forward` 中处理新类型的分支逻辑。
 
 5. **SAM2 权重路径**：在 `util/path_utils.py` 的 `SAM2_PATHS_CONFIG` 和 `SAM2_WEIGHTS_URL` 中管理。
+
+6. [Modify] **新增 query-only 输出分支**：若仿照当前不确定性头扩展新模块，需要同时同步 `DecoderOutput` 字段、训练损失接入、`build_sansa` 的可训练参数过滤，以及 `util/commons.py` 中检查点保存逻辑。
+
+---
+
+## 新增模块：不确定性估计
+
+### `models/sansa/uncertainty.py`
+
+`UncertaintyHead` 是一个轻量级逐像素不确定性估计头，当前实现为：
+
+```python
+Conv2d(C, C//4, 1) -> LayerNorm2d(C//4) -> ReLU -> Conv2d(C//4, 1, 1)
+```
+
+- 输入通常来自 query 帧的 `pix_feat_with_mem`，形状为 `[B, 256, 64, 64]`
+- 输出为逐像素 `log_var`，形状为 `[B, 1, 64, 64]`
+- 最后一层卷积的权重和偏置做零初始化，使训练初期 `log_var` 约为 0，方差约为 1
+- 该模块只在 `use_uncertainty=True` 时实例化，不会影响默认关闭时的原始前向流程
