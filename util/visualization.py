@@ -29,7 +29,10 @@ def visualize_episode(
     # overlay color and alpha
     OVERLAY_RGBA = (30/255.0, 144/255.0, 255/255.0, 0.6)
 
-    SRC_H, SRC_W = src_size, src_size
+    if isinstance(src_size, (tuple, list)):
+        SRC_H, SRC_W = int(src_size[0]), int(src_size[1])
+    else:
+        SRC_H = SRC_W = int(src_size)
 
     def _to_img_np(x):
         x = denormalize(x)
@@ -45,7 +48,8 @@ def visualize_episode(
             x = x[0]
         if x.ndim == 3 and x.shape[-1] == 1: # [H,W,1]
             x = x[..., 0]
-        return (x > 0).astype(np.uint8)
+        # Use a foreground threshold that is robust to interpolation artifacts.
+        return (x > 0.5).astype(np.uint8)
 
     def _scale_coords(coords, dst_h, dst_w):
         c = np.asarray(coords, dtype=np.float32)
@@ -57,22 +61,35 @@ def visualize_episode(
     def _resize_mask(mask, dst_h, dst_w):
         m = mask.detach().float()
         out = F.interpolate(m, size=(dst_h, dst_w), mode="nearest")
-        return (out[0, 0] > 0).cpu().numpy().astype(np.float32)
+        return (out[0, 0] > 0.5).cpu().numpy().astype(np.float32)
+
+    def _to_scalar(value):
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return float(value.item())
+            value = value.detach().float().mean().item()
+        return float(value)
 
 
     def draw_mask(ax, img, mask, title):
         ax.imshow(img)
         h, w = mask.shape[:2]
-        overlay = np.ones((h, w, 4), dtype=np.float32)
-        overlay[..., 0:4] = OVERLAY_RGBA
-        ax.imshow(overlay, alpha=mask.astype(float))
+        overlay = np.zeros((h, w, 4), dtype=np.float32)
+        overlay[..., 0] = OVERLAY_RGBA[0]
+        overlay[..., 1] = OVERLAY_RGBA[1]
+        overlay[..., 2] = OVERLAY_RGBA[2]
+        overlay[..., 3] = mask.astype(np.float32) * OVERLAY_RGBA[3]
+        ax.imshow(overlay)
         ax.set_title(title, fontsize=18, fontweight="bold")
         ax.axis("off")
 
     def draw_points(ax, img, coords, title):
         ax.imshow(img); ax.axis("off"); ax.set_title(title, fontsize=18, fontweight="bold")
-        c = np.asarray(coords)[0]
-        ax.scatter(c[:,0], c[:,1], c='lime', marker='*', s=250, edgecolor='white', linewidth=1.2)
+        c = np.asarray(coords)
+        if c.ndim == 3:
+            c = c[0]
+        if c.size > 0:
+            ax.scatter(c[:,0], c[:,1], c='lime', marker='*', s=250, edgecolor='white', linewidth=1.2)
 
     def draw_boxes(ax, img, boxes_xyxy, title):
         ax.imshow(img); ax.axis("off"); ax.set_title(title, fontsize=18, fontweight="bold")
@@ -103,6 +120,11 @@ def visualize_episode(
         img = s_imgs[i]
         H_disp, W_disp = img.shape[:2]
         spec = prompt_dict.get(batch_idx, {}).get(i, None)
+        if spec is None:
+            ax.imshow(img)
+            ax.axis("off")
+            ax.set_title(f"Support {i+1}", fontsize=18, fontweight="bold")
+            continue
 
         ptype = spec['prompt_type']
         pd = spec.get('prompt', {})
@@ -124,13 +146,17 @@ def visualize_episode(
             c = coords.detach().cpu().numpy() if isinstance(coords, torch.Tensor) else np.asarray(coords, dtype=np.float32)
             c = _scale_coords(c.copy(), H_disp, W_disp)
             draw_points(ax, img, c, f"Support {i+1} ({ptype})")
+        else:
+            ax.imshow(img)
+            ax.axis("off")
+            ax.set_title(f"Support {i+1}", fontsize=18, fontweight="bold")
 
     # GT & Prediction
     draw_mask(axes[K],     q_img, q_gt, "GT")
     draw_mask(axes[K + 1], q_img, q_pr, "Prediction")
 
     if iou is not None:
-        fig.suptitle(f"IoU: {iou:.2f}", fontsize=16, y=1.1)
+        fig.suptitle(f"IoU: {_to_scalar(iou):.2f}", fontsize=16, y=1.1)
 
     out_path = join(out_dir, "vis", f"{idx}.png")
     fig.savefig(out_path, bbox_inches="tight")

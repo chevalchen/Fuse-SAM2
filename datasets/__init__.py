@@ -2,6 +2,7 @@ from .coco import build as build_coco, DatasetCOCO
 from .lvis import build as build_lvis, DatasetLVIS
 from .fss import build as build_fss, DatasetFSS
 from .deepglobe import build as build_dg, DatasetDeepglobe
+from .geocrack import build as build_geocrack, DatasetGeoCrack
 from .isic import build as build_isic, DatasetISIC
 from .lung import build as build_lung, DatasetLung
 from .pascal_part import build as build_pascal_part, DatasetPASCALPart
@@ -22,6 +23,8 @@ def build_dataset(dataset_file: str, image_set: str, args=None):
         return build_paco_part(image_set, args)
     if dataset_file == 'deepglobe':
         return build_dg(image_set, args)
+    if dataset_file == 'geocrack':
+        return build_geocrack(image_set, args)
     if dataset_file == 'isic':
         return build_isic(image_set, args)
     if dataset_file == 'lung':

@@ -148,7 +148,8 @@ def resize_mask(mask: torch.Tensor, image_size: int) -> torch.Tensor:
         mode="bilinear",
         antialias=True,
     )
-    return (mask.float() > 0)
+    # Bilinear resize can introduce tiny positive values outside the object.
+    return (mask.float() > 0.5)
 
 
 def rescale_points(points: torch.Tensor, from_hw, to_hw):

@@ -83,6 +83,9 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
 
         if args.visualize:
             from util.visualization import visualize_episode
+            fg_inter = area_inter[1].sum().item()
+            fg_union = area_union[1].sum().item()
+            vis_iou = fg_inter / max(fg_union, 1e-6)
             visualize_episode(
                 support_imgs=[support_imgs[0, i].cpu() for i in range(args.shots)],
                 query_img=query_img[0].cpu(),
@@ -92,7 +95,7 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
                 out_dir=args.output_dir,
                 idx=idx,
                 src_size=model.sam.image_size,
-                iou=area_inter/area_union,
+                iou=vis_iou,
             )
     average_meter.write_result(args.dataset_file)
     miou, fb_iou, _ = average_meter.compute_iou()
