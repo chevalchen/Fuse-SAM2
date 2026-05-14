@@ -33,6 +33,12 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel_factor", type=float, default=0.3, help="Adapter channel scaling factor (model-specific).")
     parser.add_argument("--use_uncertainty", action="store_true", default=False, help="Enable UncertaintyHead after memory attention.")
     parser.add_argument("--uncertainty_loss_weight", type=float, default=0.1, help="Weight for uncertainty NLL loss.")
+    parser.add_argument(
+        "--uncertainty_warmup_epochs",
+        type=int,
+        default=0,
+        help="Disable uncertainty-based feature recalibration for the first N epochs while keeping the NLL loss active.",
+    )
 
     # Optimization
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")

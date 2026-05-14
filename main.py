@@ -80,6 +80,12 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
+        if args.use_uncertainty:
+            unc_recalib_active = epoch >= args.uncertainty_warmup_epochs
+            if hasattr(model, "module"):
+                model.module.unc_recalib_active = unc_recalib_active
+            else:
+                model.unc_recalib_active = unc_recalib_active
 
         train_stats = train_one_epoch(
                 model, data_loader_train, optimizer, device, epoch,

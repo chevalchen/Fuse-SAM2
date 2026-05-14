@@ -8,8 +8,8 @@ class UncertaintyHead(nn.Module):
     def __init__(self, in_channels: int = 256):
         super().__init__()
         hidden_channels = max(1, in_channels // 4)
-        self.proj_in = nn.Conv2d(in_channels, hidden_channels, kernel_size=1)
-        self.norm = LayerNorm2d(hidden_channels)
+        self.norm = LayerNorm2d(in_channels)
+        self.proj_in = nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=False)
         self.act = nn.ReLU(inplace=True)
         self.proj_out = nn.Conv2d(hidden_channels, 1, kernel_size=1)
 
@@ -18,8 +18,8 @@ class UncertaintyHead(nn.Module):
         nn.init.zeros_(self.proj_out.bias)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.proj_in(x)
         x = self.norm(x)
+        x = self.proj_in(x)
         x = self.act(x)
         log_var = self.proj_out(x)
-        return log_var
+        return log_var.clamp(-6.0, 6.0)

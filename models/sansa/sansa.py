@@ -18,11 +18,12 @@ from util.promptable_utils import rescale_prompt
 
 
 class SANSA(nn.Module):
-    def __init__(self, sam: SAM2Base, device: torch.device, use_uncertainty: bool = True):
+    def __init__(self, sam: SAM2Base, device: torch.device, use_uncertainty: bool = False):
         super().__init__()
         self.sam = sam
         self.device = device
         self.use_uncertainty = use_uncertainty
+        self.unc_recalib_active = True
         if self.use_uncertainty:
             self.uncertainty_head = UncertaintyHead(in_channels=256)
 
@@ -72,11 +73,11 @@ class SANSA(nn.Module):
         masks = F.interpolate(masks[None], size=orig_size[0], mode='bilinear', align_corners=False)[0]
         result = {"pred_masks": masks}
         if outputs["uncertainties"]:
-            uncertainty_maps = torch.cat(outputs["uncertainties"], dim=0)
-            uncertainty_maps = F.interpolate(
-                uncertainty_maps, size=orig_size[0], mode='bilinear', align_corners=False
+            uncertainty_feat = torch.cat(outputs["uncertainties"], dim=0)
+            result["uncertainty_feat"] = uncertainty_feat
+            result["uncertainty"] = F.interpolate(
+                uncertainty_feat, size=orig_size[0], mode='bilinear', align_corners=False
             )
-            result["uncertainty"] = uncertainty_maps
         return result
 
     def _preprocess_visual_features(
@@ -168,6 +169,9 @@ class SANSA(nn.Module):
         uncertainty = None
         if self.use_uncertainty:
             uncertainty = self.uncertainty_head(pix_feat_with_mem)
+            if self.unc_recalib_active:
+                confidence = 1.0 - torch.sigmoid(uncertainty)
+                pix_feat_with_mem = pix_feat_with_mem * confidence
 
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,
@@ -243,7 +247,7 @@ def build_sansa(
     adaptformer_stages: List[int] = [2, 3],
     channel_factor: float = 0.3,
     device: str = 'cuda',
-    use_uncertainty: bool = True,
+    use_uncertainty: bool = False,
 ) -> SANSA:
     assert sam2_version in SAM2_PATHS_CONFIG.keys(), f'wrong argument sam2_version: {sam2_version}'
     

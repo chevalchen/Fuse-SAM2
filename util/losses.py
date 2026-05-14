@@ -97,6 +97,25 @@ def loss_masks(
     }
 
 
+def uncertainty_nll_loss(
+    pred_logits: torch.Tensor,
+    gt_masks: torch.Tensor,
+    log_var: torch.Tensor,
+) -> torch.Tensor:
+    prob = torch.sigmoid(pred_logits)
+    gt = gt_masks.to(device=pred_logits.device, dtype=pred_logits.dtype)
+
+    if log_var.dim() == 4:
+        log_var = log_var.squeeze(1)
+    elif log_var.dim() != 3:
+        raise ValueError(f"Unsupported log_var shape: {tuple(log_var.shape)}")
+
+    log_var = log_var.clamp(-6.0, 6.0)
+    err_sq = (prob - gt).pow(2)
+    loss = 0.5 * torch.exp(-log_var) * err_sq + 0.5 * log_var
+    return loss.mean()
+
+
 def uncertainty_loss(
     pred_masks: torch.Tensor,
     gt_masks: torch.Tensor,
@@ -106,26 +125,9 @@ def uncertainty_loss(
     bs, t = gt_masks.shape[:2]
     start = max(0, t - num_frames)
 
-    pred = pred_masks[:, start:t]
-    gt = gt_masks[:, start:t].to(device=pred.device, dtype=pred.dtype)
-    prob = pred.sigmoid()
+    pred = pred_masks[:, start:t].reshape(-1, *pred_masks.shape[-2:])
+    gt = gt_masks[:, start:t].reshape(-1, *gt_masks.shape[-2:])
+    if log_var.dim() == 5:
+        log_var = log_var[:, start:t].reshape(-1, *log_var.shape[-3:])
 
-    if log_var.dim() == 4:
-        if log_var.shape[0] == bs:
-            log_var = log_var[:, None]
-        else:
-            frames = max(1, log_var.shape[0] // bs)
-            log_var = einops.rearrange(log_var, "(b f) c h w -> b f c h w", b=bs, f=frames)
-    elif log_var.dim() == 5:
-        pass
-    else:
-        raise ValueError(f"Unsupported log_var shape: {tuple(log_var.shape)}")
-
-    target_frames = prob.shape[1]
-    if log_var.shape[1] != target_frames:
-        log_var = log_var[:, -target_frames:]
-
-    log_var = log_var.squeeze(2).clamp(-6.0, 6.0)
-    err = (prob - gt).pow(2)
-    loss = 0.5 * torch.exp(-log_var) * err + 0.5 * log_var
-    return loss.mean()
+    return uncertainty_nll_loss(pred_logits=pred, gt_masks=gt, log_var=log_var)
