@@ -33,6 +33,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel_factor", type=float, default=0.3, help="Adapter channel scaling factor (model-specific).")
     parser.add_argument("--use_uncertainty", action="store_true", default=False, help="Enable UncertaintyHead after memory attention.")
     parser.add_argument("--uncertainty_loss_weight", type=float, default=0.1, help="Weight for uncertainty NLL loss.")
+    parser.add_argument("--use_part_proto_ptr", action="store_true", default=False, help="Enhance memory obj_ptr with support part prototype.")
+    parser.add_argument("--use_corr_dense_prompt", action="store_true", default=False, help="Inject prototype-query correlation map as SAM dense prompt.")
+    parser.add_argument("--part_proto_temperature", type=float, default=1.0, help="Temperature for prototype-query correlation map scaling.")
+    parser.add_argument("--corr_clamp", type=float, default=6.0, help="Clamp value for correlation logits before dense prompt embedding.")
 
     # Optimization
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")

@@ -18,13 +18,30 @@ from util.promptable_utils import rescale_prompt
 
 
 class SANSA(nn.Module):
-    def __init__(self, sam: SAM2Base, device: torch.device, use_uncertainty: bool = True):
+    def __init__(
+        self,
+        sam: SAM2Base,
+        device: torch.device,
+        use_uncertainty: bool = True,
+        use_part_proto_ptr: bool = False,
+        use_corr_dense_prompt: bool = False,
+        part_proto_temperature: float = 1.0,
+        corr_clamp: float = 6.0,
+    ):
         super().__init__()
         self.sam = sam
         self.device = device
         self.use_uncertainty = use_uncertainty
+        self.use_part_proto_ptr = use_part_proto_ptr
+        self.use_corr_dense_prompt = use_corr_dense_prompt
+        self.part_proto_temperature = part_proto_temperature
+        self.corr_clamp = corr_clamp
         if self.use_uncertainty:
             self.uncertainty_head = UncertaintyHead(in_channels=256)
+        if self.use_part_proto_ptr or self.use_corr_dense_prompt:
+            self.part_proto_proj = nn.Linear(256, 256)
+            nn.init.zeros_(self.part_proto_proj.weight)
+            nn.init.zeros_(self.part_proto_proj.bias)
 
     def forward(self, samples: torch.Tensor, prompt_dict: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -169,8 +186,19 @@ class SANSA(nn.Module):
         if self.use_uncertainty:
             uncertainty = self.uncertainty_head(pix_feat_with_mem)
 
+        dense_prompt = None
+        if self.use_corr_dense_prompt:
+            ref_proto = self._get_reference_part_proto(memory_bank)
+            if ref_proto is not None:
+                dense_prompt = self._build_corr_dense_prompt(
+                    current_vision_feats=current_vision_feats,
+                    feat_sizes=backbone_out.feat_sizes,
+                    part_proto=ref_proto,
+                )
+
         decoder_out: DecoderOutput = self.sam._forward_sam_heads(
             backbone_features=pix_feat_with_mem,
+            mask_inputs=dense_prompt,
             high_res_features=high_res_features,
             multimask_output=True if memory_idx > 0 else False
         )
@@ -200,12 +228,84 @@ class SANSA(nn.Module):
             pred_masks_high_res=decoder_out.high_res_masks,
             is_mask_from_pts=False,
         )
+        part_proto = None
+        enhanced_obj_ptr = decoder_out.obj_ptr
+        if self.use_part_proto_ptr or self.use_corr_dense_prompt:
+            part_proto = self._extract_part_prototype(
+                current_vision_feats=current_vision_feats,
+                feat_sizes=feat_sizes,
+                high_res_masks=decoder_out.high_res_masks,
+            )
+            if part_proto is not None:
+                part_proto = self.part_proto_proj(part_proto)
+                if self.use_part_proto_ptr:
+                    enhanced_obj_ptr = self._enhance_obj_ptr(decoder_out.obj_ptr, part_proto)
         return {
             "maskmem_features": mem_feats,
             "maskmem_pos_enc": mem_pos,
             "pred_masks": decoder_out.low_res_masks,
-            "obj_ptr": decoder_out.obj_ptr,
+            "obj_ptr": enhanced_obj_ptr,
+            "part_proto": part_proto,
         }
+
+    def _extract_part_prototype(
+        self,
+        current_vision_feats: List[torch.Tensor],
+        feat_sizes: List[Tuple[int, int]],
+        high_res_masks: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if high_res_masks is None:
+            return None
+        feat = current_vision_feats[-1]
+        bsz = feat.size(1)
+        channels = feat.size(2)
+        h, w = feat_sizes[-1]
+        feat_bchw = feat.permute(1, 2, 0).contiguous().view(bsz, channels, h, w)
+        mask = torch.sigmoid(high_res_masks).float()
+        mask = F.interpolate(mask, size=(h, w), mode="bilinear", align_corners=False)
+        denom = mask.sum(dim=(2, 3)).clamp_min(1e-6)
+        proto = (feat_bchw * mask).sum(dim=(2, 3)) / denom
+        return proto
+
+    def _enhance_obj_ptr(self, obj_ptr: torch.Tensor, part_proto: torch.Tensor) -> torch.Tensor:
+        return obj_ptr + part_proto
+
+    def _get_reference_part_proto(self, memory_bank: Dict[int, Dict[str, torch.Tensor]]) -> torch.Tensor | None:
+        if not memory_bank:
+            return None
+        first = memory_bank.get(0, None)
+        if first is not None and first.get("part_proto", None) is not None:
+            return first["part_proto"]
+        for t in sorted(memory_bank.keys(), reverse=True):
+            candidate = memory_bank[t].get("part_proto", None)
+            if candidate is not None:
+                return candidate
+        return None
+
+    def _build_corr_dense_prompt(
+        self,
+        current_vision_feats: List[torch.Tensor],
+        feat_sizes: List[Tuple[int, int]],
+        part_proto: torch.Tensor,
+    ) -> torch.Tensor:
+        feat = current_vision_feats[-1]
+        bsz = feat.size(1)
+        channels = feat.size(2)
+        h, w = feat_sizes[-1]
+        query_feat = feat.permute(1, 2, 0).contiguous().view(bsz, channels, h, w)
+
+        query_norm = F.normalize(query_feat, dim=1)
+        proto_norm = F.normalize(part_proto, dim=1).unsqueeze(-1).unsqueeze(-1)
+        corr_map = (query_norm * proto_norm).sum(dim=1, keepdim=True)
+
+        temperature = max(float(self.part_proto_temperature), 1e-6)
+        corr_map = corr_map / temperature
+        if self.corr_clamp is not None and self.corr_clamp > 0:
+            corr_map = corr_map.clamp(min=-self.corr_clamp, max=self.corr_clamp)
+
+        dense_size = self.sam.sam_prompt_encoder.mask_input_size
+        corr_prompt = F.interpolate(corr_map, size=dense_size, mode="bilinear", align_corners=False)
+        return corr_prompt
 
     def _forward_backbone(
         self, samples: torch.Tensor, orig_size: List[Tuple[int, int]]
@@ -244,6 +344,10 @@ def build_sansa(
     channel_factor: float = 0.3,
     device: str = 'cuda',
     use_uncertainty: bool = True,
+    use_part_proto_ptr: bool = False,
+    use_corr_dense_prompt: bool = False,
+    part_proto_temperature: float = 1.0,
+    corr_clamp: float = 6.0,
 ) -> SANSA:
     assert sam2_version in SAM2_PATHS_CONFIG.keys(), f'wrong argument sam2_version: {sam2_version}'
     
@@ -266,10 +370,22 @@ def build_sansa(
 
     state_dict = torch.load(sam2_weights, map_location="cpu", weights_only=False)["model"]
     sam.load_state_dict(state_dict, strict=False)
-    model = SANSA(sam=sam, device=torch.device(device), use_uncertainty=use_uncertainty)
+    model = SANSA(
+        sam=sam,
+        device=torch.device(device),
+        use_uncertainty=use_uncertainty,
+        use_part_proto_ptr=use_part_proto_ptr,
+        use_corr_dense_prompt=use_corr_dense_prompt,
+        part_proto_temperature=part_proto_temperature,
+        corr_clamp=corr_clamp,
+    )
 
     # freeze everything except adapters and uncertainty head
     for name, p in model.named_parameters():
-        p.requires_grad = ("adapter" in name or "uncertainty_head" in name)
+        p.requires_grad = (
+            "adapter" in name
+            or "uncertainty_head" in name
+            or "part_proto_proj" in name
+        )
 
     return model

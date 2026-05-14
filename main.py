@@ -31,6 +31,10 @@ def main(args):
         args.channel_factor,
         args.device,
         use_uncertainty=args.use_uncertainty,
+        use_part_proto_ptr=args.use_part_proto_ptr,
+        use_corr_dense_prompt=args.use_corr_dense_prompt,
+        part_proto_temperature=args.part_proto_temperature,
+        corr_clamp=args.corr_clamp,
     )
     model.to(device)
 

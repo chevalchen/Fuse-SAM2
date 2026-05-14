@@ -124,7 +124,7 @@ def adapter_state_dict(model) -> dict:
     adapter_sd = {
         k: v.cpu()
         for k, v in sd.items()
-        if ('adapter' in k or 'uncertainty_head' in k)
+        if ('adapter' in k or 'uncertainty_head' in k or 'part_proto_proj' in k)
     }
     if not adapter_sd:
         print("[warn] no adapter keys found when saving!")
