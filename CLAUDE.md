@@ -53,6 +53,7 @@ SANSA/
 - builds the same model
 - loads adapter-only checkpoint with `strict=False`
 - evaluates mIoU on the selected dataset/fold
+- supports horizontal-flip TTA via `--tta flip` (query frame only; probabilities averaged in sigmoid space)
 - optionally writes visualizations
 
 ### `engine.py`
@@ -197,11 +198,12 @@ Main argument groups in `opts.py`:
 - episode config: prompt, shots, fold, `J`
 - model: SAM2 version, adapter stages, channel factor, uncertainty flags
 - optimization: lr, weight decay, epochs, batch size, grad clip
-- inference: threshold, visualize
+- inference: threshold, visualize, tta
 
 Important runtime facts:
 - `--use_uncertainty` defaults to off
 - `--uncertainty_warmup_epochs` disables feature recalibration early while keeping NLL active
+- `--tta` defaults to `none`; `flip` runs a second forward pass with the query frame flipped horizontally, un-flips the prediction, and averages probabilities — support frames and their prompts are untouched
 - DDP is supported; `--no_distributed` forces single-process mode
 
 ## Checkpoint Rules
