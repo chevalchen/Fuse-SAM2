@@ -53,7 +53,17 @@ def get_args_parser() -> argparse.ArgumentParser:
 
     # Inference
     parser.add_argument("--threshold", type=float, default=0.5, help="Sigmoid threshold to binarize masks at eval.")
-    parser.add_argument("--tta", type=str, default="none", choices=["none", "flip"], help="Test-time augmentation strategy.")
+    parser.add_argument("--tta", type=str, nargs="+", default=["none"],
+                        choices=["none", "flip", "scale"],
+                        help="Test-time augmentation. Composable: --tta flip scale.")
+    parser.add_argument("--tta_scales", type=float, nargs="+", default=[0.75, 1.25],
+                        help="Extra query zoom scales when 'scale' is in --tta. 1.0 is always included.")
+    parser.add_argument("--shot_permutations", type=int, default=1,
+                        help="Number of random support orderings to ensemble (K-shot only). 1 = disabled.")
+    parser.add_argument("--postprocess_min_area", type=int, default=0,
+                        help="Drop connected components smaller than this many pixels after binarization. 0 = disabled.")
+    parser.add_argument("--adaptive_threshold", type=str, default="fixed", choices=["fixed", "otsu"],
+                        help="Binarization strategy: 'fixed' uses --threshold; 'otsu' computes per-query Otsu.")
     parser.add_argument("--visualize", action="store_true", default=False, help="Save qualitative results.")
 
     return parser

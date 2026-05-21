@@ -13,6 +13,10 @@ from util.commons import make_deterministic, setup_logging, resume_from_checkpoi
 import util.misc as utils
 from util.promptable_utils import build_prompt_dict
 from util.metrics import AverageMeter, Evaluator
+from util.tta_utils import (
+    build_tta_passes, get_permutations, permute_supports,
+    drop_small_components, binarize,
+)
 
 
 def main(args: argparse.Namespace) -> float:
@@ -61,31 +65,51 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
         query_img, query_mask = batch['query_img'], batch['query_mask']
         support_imgs, support_masks = batch['support_imgs'], batch['support_masks']
 
-        imgs = torch.cat([support_imgs[0], query_img]).unsqueeze(0) # b t c h w
-        img_h, img_w = imgs.shape[-2:]
+        img_h, img_w = query_img.shape[-2:]
 
-        imgs = imgs.to(args.device)
-        prompt_dict = build_prompt_dict(support_masks, args.prompt, n_shots=args.shots, train_mode=False, device=model.device)
+        # Build identity prompt_dict once — used for visualization.
+        prompt_dict = build_prompt_dict(
+            support_masks, args.prompt, n_shots=args.shots,
+            train_mode=False, device=model.device,
+        )
 
+        # --- Ensemble loop: support permutations × geometric TTA passes ---
         with torch.no_grad():
-            outputs = model(imgs, prompt_dict)
-            pred_logits = outputs["pred_masks"].unsqueeze(0)          # [1, T, h, w]
-            pred_logits = F.interpolate(pred_logits, size=(img_h, img_w), mode='bilinear', align_corners=False)
-            pred_probs = pred_logits.sigmoid()                        # [1, T, H, W]
+            permutations = get_permutations(args.shots, args.shot_permutations)
+            prob_sum = None
+            n_passes = 0
 
-            if args.tta == 'flip':
-                imgs_flip = imgs.clone()
-                imgs_flip[0, -1] = imgs[0, -1].flip(-1)              # 只翻转最后一帧（query）
-                outputs_flip = model(imgs_flip, prompt_dict)
-                pred_logits_flip = outputs_flip["pred_masks"].unsqueeze(0)
-                pred_logits_flip = F.interpolate(pred_logits_flip, size=(img_h, img_w), mode='bilinear', align_corners=False)
-                pred_probs_flip = pred_logits_flip.sigmoid()
-                pred_probs_flip[0, -1] = pred_probs_flip[0, -1].flip(-1)   # 反翻转 query 预测
-                pred_probs = (pred_probs + pred_probs_flip) / 2.0           # 概率平均
+            for perm in permutations:
+                s_imgs, s_masks = permute_supports(support_imgs, support_masks, perm)
+                imgs_perm = torch.cat([s_imgs[0], query_img]).unsqueeze(0).to(args.device)
+                prompt_perm = build_prompt_dict(
+                    s_masks, args.prompt, n_shots=args.shots,
+                    train_mode=False, device=model.device,
+                )
 
-        pred_masks = (pred_probs > args.threshold)[0].cpu()
+                for imgs_aug, inv_fn in build_tta_passes(
+                    args.tta, args.tta_scales, imgs_perm, img_h, img_w
+                ):
+                    out = model(imgs_aug, prompt_perm)
+                    logits = F.interpolate(
+                        out["pred_masks"].unsqueeze(0),
+                        size=(img_h, img_w), mode='bilinear', align_corners=False,
+                    )
+                    query_prob = inv_fn(logits.sigmoid()[0, -1])   # [H, W]
+                    prob_sum = query_prob if prob_sum is None else prob_sum + query_prob
+                    n_passes += 1
 
-        area_inter, area_union = Evaluator.classify_prediction(pred_masks[-1:].float(), batch, device=imgs.device)
+        prob_mean = (prob_sum / n_passes).cpu()                    # [H, W]
+
+        # --- Post-processing ---
+        query_pred = binarize(prob_mean, args.threshold, args.adaptive_threshold)
+        query_pred = torch.from_numpy(
+            drop_small_components(query_pred.numpy(), args.postprocess_min_area)
+        ).bool()
+
+        area_inter, area_union = Evaluator.classify_prediction(
+            query_pred.unsqueeze(0).float(), batch, device=args.device,
+        )
         average_meter.update(area_inter, area_union, batch['class_id'].cuda())
 
         if (idx + 1) % 50 == 0:
@@ -101,7 +125,7 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
                 support_imgs=[support_imgs[0, i].cpu() for i in range(args.shots)],
                 query_img=query_img[0].cpu(),
                 query_gt=(query_mask[0].numpy() > 0),
-                query_pred=pred_masks[-1].numpy(),
+                query_pred=query_pred.numpy(),
                 prompt_dict=prompt_dict,
                 out_dir=args.output_dir,
                 idx=idx,
