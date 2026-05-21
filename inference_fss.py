@@ -15,7 +15,7 @@ from util.promptable_utils import build_prompt_dict
 from util.metrics import AverageMeter, Evaluator
 from util.tta_utils import (
     build_tta_passes, get_permutations, permute_supports,
-    drop_small_components, binarize,
+    drop_small_components, binarize, calibrate_threshold_by_support,
 )
 
 
@@ -73,6 +73,12 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
             train_mode=False, device=model.device,
         )
 
+        # Module D: compute effective threshold (area-calibrated or base).
+        eff_threshold = (
+            calibrate_threshold_by_support(args.threshold, support_masks)
+            if args.area_calibrate_threshold else args.threshold
+        )
+
         # --- Ensemble loop: support permutations × geometric TTA passes ---
         with torch.no_grad():
             permutations = get_permutations(args.shots, args.shot_permutations)
@@ -101,11 +107,36 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
 
         prob_mean = (prob_sum / n_passes).cpu()                    # [H, W]
 
-        # --- Post-processing ---
-        query_pred = binarize(prob_mean, args.threshold, args.adaptive_threshold)
+        # --- Post-processing (Pass 1) ---
+        query_pred = binarize(prob_mean, eff_threshold, args.adaptive_threshold)
         query_pred = torch.from_numpy(
             drop_small_components(query_pred.numpy(), args.postprocess_min_area)
         ).bool()
+
+        # --- Self-prompting refinement (Pass 2) ---
+        if args.self_refine and query_pred.sum().item() >= args.self_refine_min_area:
+            # Treat the Pass-1 predicted mask as a K+1-th pseudo-support.
+            pseudo_mask = query_pred.float().unsqueeze(0).unsqueeze(0)          # [1, 1, H, W]
+            s_imgs_r = torch.cat([support_imgs, query_img.unsqueeze(1)], dim=1) # [1, K+1, C, H, W]
+            s_masks_r = torch.cat(
+                [support_masks, pseudo_mask], dim=1
+            )                                                                    # [1, K+1, H, W]
+            imgs_r = torch.cat([s_imgs_r[0], query_img]).unsqueeze(0).to(args.device)
+            prompt_r = build_prompt_dict(
+                s_masks_r, 'mask', n_shots=args.shots + 1,
+                train_mode=False, device=model.device,
+            )
+            with torch.no_grad():
+                out_r = model(imgs_r, prompt_r)
+                logits_r = F.interpolate(
+                    out_r["pred_masks"].unsqueeze(0),
+                    size=(img_h, img_w), mode='bilinear', align_corners=False,
+                )
+                prob_r = logits_r.sigmoid()[0, -1].cpu()                         # [H, W]
+            query_pred = binarize(prob_r, eff_threshold, args.adaptive_threshold)
+            query_pred = torch.from_numpy(
+                drop_small_components(query_pred.numpy(), args.postprocess_min_area)
+            ).bool()
 
         area_inter, area_union = Evaluator.classify_prediction(
             query_pred.unsqueeze(0).float(), batch, device=args.device,

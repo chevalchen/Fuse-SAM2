@@ -1,10 +1,11 @@
 """
 Inference-time augmentation and post-processing utilities for part-seg FSS.
 
-Three modules:
+Four modules:
   A. Geometric TTA: flip + scale (center-crop zoom-in / zero-pad zoom-out)
   B. Support permutation ensembling (K-shot memory-bank order diversity)
   C. Post-processing: connected-component filter + Otsu adaptive threshold
+  D. Support-area-calibrated threshold (part-size-aware recall/precision trade-off)
 """
 from typing import Callable, List, Tuple
 
@@ -235,3 +236,49 @@ def _otsu_threshold(arr: np.ndarray) -> float:
         sigma_b = w0 * w1 * (mu0 - mu1) ** 2
     sigma_b = np.nan_to_num(sigma_b)
     return float(bin_centers[int(np.argmax(sigma_b))])
+
+
+# ---------------------------------------------------------------------------
+# Module D — Support-area-calibrated threshold
+# ---------------------------------------------------------------------------
+
+def calibrate_threshold_by_support(
+    base_threshold: float,
+    support_masks: torch.Tensor,
+) -> float:
+    """
+    Adjust the binarization threshold based on the foreground area ratio of the
+    support masks, giving a part-size-aware recall/precision trade-off.
+
+    Rationale for part-seg (Pascal-Part / PACO-Part):
+      - Very small parts (eyes, screws, handles): FG ratio < 3 % of the cropped
+        object portrait → model produces diffuse low-probability activations;
+        lowering the threshold recovers recall without proportionally hurting IoU.
+      - Large parts (torso, body): FG ratio > 20 % → model is confident; a
+        slightly higher threshold removes noisy peripheral activations.
+
+    The support masks [B, K, H, W] are averaged across batch and shots to obtain
+    a robust FG area estimate.
+
+    Calibration curve (piecewise linear on area_ratio):
+      area < 0.03  → threshold × 0.65   (very small part)
+      0.03–0.08    → threshold × 0.80   (small part)
+      0.08–0.15    → threshold × 0.90   (medium-small part)
+      0.15–0.25    → threshold × 1.00   (medium part — unchanged)
+      > 0.25       → threshold × 1.10, capped at 0.75  (large part)
+    """
+    area_ratio = support_masks.float().mean().item()
+
+    if area_ratio < 0.03:
+        scale = 0.65
+    elif area_ratio < 0.08:
+        scale = 0.80
+    elif area_ratio < 0.15:
+        scale = 0.90
+    elif area_ratio < 0.25:
+        scale = 1.00
+    else:
+        scale = 1.10
+
+    calibrated = base_threshold * scale
+    return float(min(calibrated, 0.75))
