@@ -198,13 +198,25 @@ Main argument groups in `opts.py`:
 - episode config: prompt, shots, fold, `J`
 - model: SAM2 version, adapter stages, channel factor, uncertainty flags
 - optimization: lr, weight decay, epochs, batch size, grad clip
-- inference: threshold, visualize, tta
+- inference: threshold, visualize, tta, tta_scales, shot_permutations, postprocess_min_area, adaptive_threshold
 
 Important runtime facts:
 - `--use_uncertainty` defaults to off
 - `--uncertainty_warmup_epochs` disables feature recalibration early while keeping NLL active
-- `--tta` defaults to `none`; `flip` runs a second forward pass with the query frame flipped horizontally, un-flips the prediction, and averages probabilities — support frames and their prompts are untouched
+- `--tta` is a composable list (`nargs="+"`, choices: `none` / `flip` / `scale`); default `["none"]`
+  - `flip`: horizontal-flip query frame, un-flip prediction, average probabilities
+  - `scale`: center-crop zoom-in / zero-pad zoom-out on query at scales given by `--tta_scales` (default `[0.75, 1.25]`); 1.0 always included; each prediction is inverse-warped before averaging
+  - Passes = |flip variants| × |scale variants|; e.g. `--tta flip scale` → 6 passes
+- `--shot_permutations N`: ensemble N random support orderings (K>1 only); silently no-ops for K=1
+- `--postprocess_min_area K`: drop connected components smaller than K pixels post-binarization
+- `--adaptive_threshold otsu`: per-query Otsu threshold guarded by `max(prob) > 0.3` confidence floor; falls back to `--threshold` for empty-query episodes
+- All inference flags default to their zero-cost values (no-op); the ensemble loop in `eval_fss` always runs but degenerates to a single forward pass at defaults
 - DDP is supported; `--no_distributed` forces single-process mode
+
+Inference helpers live in `util/tta_utils.py`:
+- `build_tta_passes`, `_apply_scale` — Module A
+- `get_permutations`, `permute_supports` — Module B
+- `drop_small_components`, `binarize`, `_otsu_threshold` — Module C
 
 ## Checkpoint Rules
 
