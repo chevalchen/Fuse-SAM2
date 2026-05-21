@@ -29,11 +29,79 @@
 </div>
 
 
-SANSA unlocks the hidden semantics of **Segment Anything 2**, turning it into a **powerful few-shot segmenter** for both **objects** and **parts**.  
-🚀 **No fine-tuning of SAM2 weights.**  
-🧠️ **Fully promptable: points · boxes · scribbles · masks, making it ideal for real-world labeling**.  
-📈 **State-of-the-art on few-shot object & part segmentation benchmarks.**  
-⚡ **Lightweight: 3–5× faster, 4–5× smaller!**  
+SANSA turns **Segment Anything 2** into a **few-shot segmenter** for both **objects** and **parts** by freezing SAM2 and training only lightweight adapters.  
+
+In the original paper/release, SANSA offers:
+- frozen SAM2 with AdaptFormer adapters
+- promptable support inputs: `point`, `box`, `scribble`, `mask`
+- strong few-shot performance on object and part segmentation benchmarks
+- lightweight adaptation compared with full fine-tuning
+
+## TL;DR
+
+This repository is based on SANSA, but the main focus of this codebase is **our practical extension of SANSA**, not just reproducing the original paper.
+
+Our current codebase emphasizes:
+- a **clean single-query pipeline** with sequence format `[support_1, ..., support_K, query]`
+- an optional **uncertainty-guided query branch** after memory attention
+- **feature recalibration** with `confidence = 1 - sigmoid(log_var)` before mask decoding
+- **heteroscedastic NLL supervision** on query predictions during training
+- additional downstream datasets for **remote sensing** and **medical segmentation**
+
+## Our Work
+
+Starting from SANSA, we made the following changes that are central to this repository:
+
+### 1. Uncertainty-Guided SANSA
+
+We add an optional uncertainty head on top of the query memory-conditioned feature map:
+
+```text
+pix_feat_with_mem -> UncertaintyHead -> log_var
+                  -> confidence = 1 - sigmoid(log_var)
+                  -> recalibrated feature -> mask decoder
+```
+
+This creates two training/inference loops:
+- **inference-time recalibration**: uncertain spatial regions are down-weighted before decoding
+- **training-time uncertainty supervision**: query logits and `log_var` are optimized with heteroscedastic NLL
+
+Implementation highlights:
+- the uncertainty head is attached only to the **query** path
+- SAM2 weights remain frozen
+- only adapters and the uncertainty head are trainable
+- uncertainty can be enabled with `--use_uncertainty`
+- warmup is supported with `--uncertainty_warmup_epochs`
+
+### 2. Single-Query Production Path
+
+Although the code still exposes `args.J`, the actual production pipeline in this repository is **single-query per episode**.
+
+That means:
+- training episodes are built as `[supports, query]`
+- the memory bank is filled by support frames and read by the final query frame
+- uncertainty supervision is query-only
+
+This behavior matches the current implementation and should be treated as the ground truth for development.
+
+### 3. Extended Dataset Coverage
+
+Beyond the original SANSA benchmarks, this repository also includes additional datasets:
+- `deepglobe`
+- `geocrack`
+- `isic`
+- `lung`
+
+These extensions make the codebase more suitable for applied segmentation settings beyond the original object/part few-shot benchmarks.
+
+### 4. Practical Training-Oriented Refinements
+
+This repository also includes engineering changes that make SANSA easier to adapt and maintain:
+- adapter-only / uncertainty-head-only checkpoint saving
+- query-only uncertainty outputs for loss computation and visualization
+- cleaner project documentation for agent-driven code understanding
+
+---
 
 
 https://github.com/user-attachments/assets/b8c81a27-d8d5-496d-ae3e-eaefd5a7cf90
@@ -58,11 +126,31 @@ pip install -r requirements.txt
 
 ## 💡 **Getting Started**
 
+If you only need the big picture:
+- **SANSA**: frozen SAM2 + adapters for few-shot segmentation
+- **this repository**: SANSA plus uncertainty-guided query decoding and extra applied datasets
+
 In this repository, you will find:   
 > **1. SANSA Universal Model**: a single model, fully promptable (points · boxes · scribbles · masks), for both objects & parts.  
 > &nbsp;&nbsp;&nbsp; · We release this model on **TorchHub**, and include an **interactive demo** to try it on your own data.  
 > &nbsp;&nbsp;&nbsp; · *Note*: this is *not* the model used for the paper benchmarks.  
 > **2. Paper Results & Training**: strict few-shot and in-context benchmarks, with results and training scripts for reproducibility.
+> **3. Our Extensions**: optional uncertainty-aware decoding and added datasets for practical segmentation scenarios.
+
+### Quick Example: Our Uncertainty Branch
+
+Use the standard training script and add:
+
+```bash
+python main.py \
+  --dataset_file geocrack \
+  --prompt mask \
+  --use_uncertainty \
+  --uncertainty_loss_weight 0.1 \
+  --uncertainty_warmup_epochs 1
+```
+
+This activates the query-only uncertainty head and warmup-controlled feature recalibration.
 
 ---
 ## 1. SANSA Universal Model 🌐
@@ -303,4 +391,3 @@ This project builds upon code from the following libraries and repositories:
 
 - [Segment Anything 2](https://github.com/facebookresearch/sam2)
 - [AdaptFormer](https://github.com/ShoufaChen/AdaptFormer)
-
