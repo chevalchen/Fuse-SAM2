@@ -210,13 +210,16 @@ Important runtime facts:
 - `--shot_permutations N`: ensemble N random support orderings (K>1 only); silently no-ops for K=1
 - `--postprocess_min_area K`: drop connected components smaller than K pixels post-binarization
 - `--adaptive_threshold otsu`: per-query Otsu threshold guarded by `max(prob) > 0.3` confidence floor; falls back to `--threshold` for empty-query episodes
+- `--area_calibrate_threshold`: scales threshold by support-mask FG area ratio — small parts (< 3 % FG) get threshold × 0.65 (recall boost), large parts (> 25 %) get × 1.10 (precision boost); zero cost; composable with Otsu
+- `--self_refine`: two-pass cascaded inference — Pass 1 result becomes a K+1-th pseudo-support with mask prompt; Pass 2 replaces Pass 1 (direct substitution); skipped when Pass-1 mask < `--self_refine_min_area` pixels (default 50) to avoid reinforcing empty predictions; ~2× cost; no model changes
 - All inference flags default to their zero-cost values (no-op); the ensemble loop in `eval_fss` always runs but degenerates to a single forward pass at defaults
 - DDP is supported; `--no_distributed` forces single-process mode
 
 Inference helpers live in `util/tta_utils.py`:
-- `build_tta_passes`, `_apply_scale` — Module A
-- `get_permutations`, `permute_supports` — Module B
-- `drop_small_components`, `binarize`, `_otsu_threshold` — Module C
+- `build_tta_passes`, `_apply_scale` — Module A (Geometric TTA)
+- `get_permutations`, `permute_supports` — Module B (Support permutation)
+- `drop_small_components`, `binarize`, `_otsu_threshold` — Module C (Post-processing)
+- `calibrate_threshold_by_support` — Module D (Support-area calibration)
 
 ## Checkpoint Rules
 
