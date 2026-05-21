@@ -53,6 +53,7 @@ def get_args_parser() -> argparse.ArgumentParser:
 
     # Inference
     parser.add_argument("--threshold", type=float, default=0.5, help="Sigmoid threshold to binarize masks at eval.")
+    parser.add_argument("--tta", type=str, default="none", choices=["none", "flip"], help="Test-time augmentation strategy.")
     parser.add_argument("--visualize", action="store_true", default=False, help="Save qualitative results.")
 
     return parser

@@ -69,10 +69,21 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
 
         with torch.no_grad():
             outputs = model(imgs, prompt_dict)
+            pred_logits = outputs["pred_masks"].unsqueeze(0)          # [1, T, h, w]
+            pred_logits = F.interpolate(pred_logits, size=(img_h, img_w), mode='bilinear', align_corners=False)
+            pred_probs = pred_logits.sigmoid()                        # [1, T, H, W]
 
-        pred_masks = outputs["pred_masks"].unsqueeze(0)  # [1, T, h, w]
-        pred_masks = F.interpolate(pred_masks, size=(img_h, img_w), mode='bilinear', align_corners=False) 
-        pred_masks = (pred_masks.sigmoid() > args.threshold)[0].cpu()
+            if args.tta == 'flip':
+                imgs_flip = imgs.clone()
+                imgs_flip[0, -1] = imgs[0, -1].flip(-1)              # 只翻转最后一帧（query）
+                outputs_flip = model(imgs_flip, prompt_dict)
+                pred_logits_flip = outputs_flip["pred_masks"].unsqueeze(0)
+                pred_logits_flip = F.interpolate(pred_logits_flip, size=(img_h, img_w), mode='bilinear', align_corners=False)
+                pred_probs_flip = pred_logits_flip.sigmoid()
+                pred_probs_flip[0, -1] = pred_probs_flip[0, -1].flip(-1)   # 反翻转 query 预测
+                pred_probs = (pred_probs + pred_probs_flip) / 2.0           # 概率平均
+
+        pred_masks = (pred_probs > args.threshold)[0].cpu()
 
         area_inter, area_union = Evaluator.classify_prediction(pred_masks[-1:].float(), batch, device=imgs.device)
         average_meter.update(area_inter, area_union, batch['class_id'].cuda())
