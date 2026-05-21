@@ -64,6 +64,12 @@ def get_args_parser() -> argparse.ArgumentParser:
                         help="Drop connected components smaller than this many pixels after binarization. 0 = disabled.")
     parser.add_argument("--adaptive_threshold", type=str, default="fixed", choices=["fixed", "otsu"],
                         help="Binarization strategy: 'fixed' uses --threshold; 'otsu' computes per-query Otsu.")
+    parser.add_argument("--area_calibrate_threshold", action="store_true", default=False,
+                        help="Scale binarization threshold by support-mask FG area ratio (part-size-aware recall/precision).")
+    parser.add_argument("--self_refine", action="store_true", default=False,
+                        help="Run a second forward pass using the first-pass prediction as a pseudo K+1-th support.")
+    parser.add_argument("--self_refine_min_area", type=int, default=50,
+                        help="Skip self-refine when the first-pass predicted mask has fewer than this many pixels.")
     parser.add_argument("--visualize", action="store_true", default=False, help="Save qualitative results.")
 
     return parser
