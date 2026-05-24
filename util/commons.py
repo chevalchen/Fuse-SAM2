@@ -119,15 +119,16 @@ def resume_from_checkpoint(ck_path, model, optimizer=None, lr_scheduler=None, ar
 
 
 def adapter_state_dict(model) -> dict:
-    """Return only adapter parameters/buffers from a model.state_dict()."""
+    """Return only trainable-module parameters/buffers from a model.state_dict()."""
     sd = model.state_dict()
+    _TRAINABLE_PREFIXES = ('adapter', 'uncertainty_head', 'hppa', 'mlpa')
     adapter_sd = {
         k: v.cpu()
         for k, v in sd.items()
-        if ('adapter' in k or 'uncertainty_head' in k)
+        if any(pfx in k for pfx in _TRAINABLE_PREFIXES)
     }
     if not adapter_sd:
-        print("[warn] no adapter keys found when saving!")
+        print("[warn] no trainable keys found when saving!")
     return adapter_sd
 
 

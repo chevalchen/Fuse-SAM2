@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Any
 
 import einops
@@ -76,14 +76,18 @@ class BackboneOutput:
 
     Attributes:
         orig_size: List of original sizes [(H, W)] for each frame (length B*T).
-        vision_feats: List of feature tensors per FPN level.
+        vision_feats: List of feature tensors per FPN level, each [HW_i, B*T, 256].
         vision_pos_embeds: List of positional encodings per level.
         feat_sizes: List of (H, W) per FPN level.
+        hiera_stage_feats: Raw Hiera trunk outputs before FPN, each [B*T, C_i, H_i, W_i].
+                           Ordered finest-to-coarsest: [stage0, stage1, stage2, stage3].
+                           None if the model was built without MLPA.
     """
     orig_size: List[Tuple[int, int]]
     vision_feats: List[Tensor]
     vision_pos_embeds: List[Tensor]
     feat_sizes: List[Tuple[int, int]]
+    hiera_stage_feats: Optional[List[Tensor]] = None
 
     def get_current_feats(self, idx: int) -> List[Tensor]:
         """
