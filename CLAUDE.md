@@ -198,7 +198,6 @@ Main argument groups in `opts.py`:
 - episode config: prompt, shots, fold, `J`
 - model: SAM2 version, adapter stages, channel factor, uncertainty flags
 - optimization: lr, weight decay, epochs, batch size, grad clip
-- fine-tuning: finetune, finetune_lr_scale
 - inference: threshold, visualize, tta, tta_scales, shot_permutations, postprocess_min_area, adaptive_threshold
 
 Important runtime facts:
@@ -215,35 +214,6 @@ Important runtime facts:
 - `--self_refine`: two-pass cascaded inference — Pass 1 result becomes a K+1-th pseudo-support with mask prompt; Pass 2 replaces Pass 1 (direct substitution); skipped when Pass-1 mask < `--self_refine_min_area` pixels (default 50) to avoid reinforcing empty predictions; ~2× cost; no model changes
 - All inference flags default to their zero-cost values (no-op); the ensemble loop in `eval_fss` always runs but degenerates to a single forward pass at defaults
 - DDP is supported; `--no_distributed` forces single-process mode
-
-Training / fine-tuning:
-- `--adaptformer_stages` accepts any subset of `{0, 1, 2, 3}` (0-indexed Hiera stages); `hieradet.py` injection is purely config-driven, no code change needed to add or remove stages. Paper strict-FSS default: stages `[2, 3]`, channel_factor `0.3`. Both strict-FSS and in-context (generalist) use channel_factor `0.3`.
-- `--finetune`: when resuming from a checkpoint whose `--adaptformer_stages` differs from the current run (e.g. generalist.pth trained on `[2,3]`, now training `[1,2,3]`), use `--finetune` to load **model weights only** and skip optimizer/LR state (which would be incompatible). Without `--finetune`, `--resume` also restores optimizer + scheduler (standard resume).
-- `--finetune_lr_scale F`: only active with `--finetune`. Splits trainable params into two optimizer groups by checking which keys appear in the checkpoint: warm-started params (stages 2,3 already trained) get `lr × F`; new params (stage 1 adapter, randomly initialized) get the full `lr`. Typical value: `0.1`. Default `1.0` = single LR group (no split).
-
-Recommended training commands:
-
-**Strict FSS from scratch — Stage 1+2+3 adapters:**
-```bash
-python main.py \
-  --dataset_file pascal_part \
-  --adaptformer_stages 1 2 3 --channel_factor 0.3 \
-  --lr 1e-4 --epochs 5 \
-  --name_exp sansa_s123_pascal_part
-```
-
-**Fine-tune from generalist.pth — add Stage 1 adapters:**
-```bash
-python main.py \
-  --dataset_file multi \
-  --multi_train pascal_part paco_part coco \
-  --ds_weight 0.35 0.45 0.20 \
-  --adaptformer_stages 1 2 3 --channel_factor 0.3 \
-  --lr 1e-4 --finetune --finetune_lr_scale 0.1 \
-  --epochs 3 --resume pretrain/generalist.pth \
-  --name_exp sansa_s123_partseg_ft
-```
-(Stage 2,3 adapters get lr=1e-5; Stage 1 adapters get lr=1e-4)
 
 Inference helpers live in `util/tta_utils.py`:
 - `build_tta_passes`, `_apply_scale` — Module A (Geometric TTA)
