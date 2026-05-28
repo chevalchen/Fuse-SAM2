@@ -43,39 +43,14 @@ def main(args):
     n_parameters_tot = sum(p.numel() for p in model.parameters())
     print(f'number of params: {n_parameters_tot}')
 
-    # --- Parameter groups ---
-    # In fine-tune mode with differential LR, peek at the checkpoint to learn which
-    # adapter params are warm-started (in checkpoint) vs newly added (e.g. Stage-1
-    # adapters that were not in the original generalist.pth).  Warm-started params
-    # get lr * finetune_lr_scale; new params get the full lr.
-    _ck_keys: set = set()
-    if args.finetune and args.resume and abs(args.finetune_lr_scale - 1.0) > 1e-6:
-        _raw_ck = torch.load(args.resume, map_location='cpu', weights_only=False)
-        _ck_keys = set(_raw_ck.get('model', {}).keys())
-        del _raw_ck  # free before training starts
+    head, fix = [], []
+    for k, v in model_without_ddp.named_parameters():
+        (head if v.requires_grad else fix).append(v)
 
-    head_warmstart, head_new, fix = [], [], []
-    for name, p in model_without_ddp.named_parameters():
-        if p.requires_grad:
-            (head_warmstart if name in _ck_keys else head_new).append(p)
-        else:
-            fix.append(p)
-
-    n_train = sum(p.numel() for p in head_warmstart) + sum(p.numel() for p in head_new)
-    print(f'Trainable parameters: {n_train}')
+    print(f'Trainable parameters: {sum(p.numel() for p in head)}')
     print(f'Parameters fixed: {sum(p.numel() for p in fix)}')
 
-    if head_warmstart:
-        lr_ws = args.lr * args.finetune_lr_scale
-        param_list = [
-            {'params': head_warmstart, 'initial_lr': lr_ws},
-            {'params': head_new,       'initial_lr': args.lr},
-        ]
-        print(f'Differential LR: {len(head_warmstart)} warm-start params @ {lr_ws:.2e}, '
-              f'{len(head_new)} new params @ {args.lr:.2e}')
-    else:
-        param_list = [{'params': head_new, 'initial_lr': args.lr}]
-
+    param_list = [{'params': head, 'initial_lr': args.lr}]
     optimizer = torch.optim.AdamW(param_list, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.999), fused=True)
 
     cfg = copy.deepcopy(args)
@@ -97,13 +72,7 @@ def main(args):
 
     output_dir = Path(args.output_dir)
     if args.resume:
-        if args.finetune:
-            # Load model weights only; optimizer/LR state from old checkpoint is
-            # incompatible when adapter stages or param counts differ.
-            resume_from_checkpoint(args.resume, model_without_ddp)
-        else:
-            model_without_ddp, optimizer, lr_scheduler = resume_from_checkpoint(
-                args.resume, model_without_ddp, optimizer, lr_scheduler, args)
+        model_without_ddp, optimizer, lr_scheduler = resume_from_checkpoint(args.resume, model_without_ddp, optimizer, lr_scheduler, args)
         
     print("Start training")
     best_miou = -1.0

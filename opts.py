@@ -48,16 +48,6 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip_max_norm", type=float, default=0.1, help="Gradient clipping max norm (0 disables clipping).")
     parser.add_argument("--batch_size", type=int, default=2, help="Global batch size (may be split per GPU).")
 
-    # Fine-tuning (used when continuing training with a different adapter-stage config)
-    parser.add_argument("--finetune", action="store_true", default=False,
-                        help="Fine-tune mode: load only model weights from --resume, skip optimizer/LR state. "
-                             "Required when resuming from a checkpoint trained with a different --adaptformer_stages.")
-    parser.add_argument("--finetune_lr_scale", type=float, default=1.0,
-                        help="LR multiplier for warm-started adapter params (those present in --resume checkpoint). "
-                             "New adapter params (e.g. newly added Stage-1 adapters) always use --lr. "
-                             "Typical value: 0.1 — warm-start stages get lr*0.1, new stages get lr. "
-                             "Only effective when --finetune is set. Default 1.0 = same LR for all params.")
-
     # Logging / Runtime
     parser.add_argument("--no_distributed", action="store_true", default=False, help="Force single-process training.")
 
